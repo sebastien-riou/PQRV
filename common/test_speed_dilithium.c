@@ -9,6 +9,13 @@
 #include "sign.h"
 #include "speed_print.h"
 
+/* The FIPS 204 (ML-DSA) API takes a context string; use the empty one. */
+#if defined(CTILDEBYTES)
+#    define CTX_ARGS NULL, 0,
+#else
+#    define CTX_ARGS
+#endif
+
 #define NTESTS 10000
 
 uint64_t t[NTESTS * 10];
@@ -112,7 +119,7 @@ int main(void)
 
     for (i = 0; i < NTESTS * 10; ++i) {
         t[i] = cpucycles();
-        crypto_sign_signature(sig, &siglen, sig, CRHBYTES, sk);
+        crypto_sign_signature(sig, &siglen, sig, CRHBYTES, CTX_ARGS sk);
     }
     print_results_average("Sign with rand:", t, NTESTS * 10);
 
@@ -176,7 +183,7 @@ int main(void)
 
     for (i = 0; i < NTESTS; ++i) {
         t[i] = cpucycles();
-        crypto_sign_verify(sig, CRYPTO_BYTES, sig, CRHBYTES, pk);
+        crypto_sign_verify(sig, CRYPTO_BYTES, sig, CRHBYTES, CTX_ARGS pk);
     }
     print_results("Verify:", t, NTESTS);
 

@@ -11,11 +11,11 @@
 // #endif
 
 #if DILITHIUM_MODE == 2
-#    define CRYPTO_ALGNAME "Dilithium2"
+#    define CRYPTO_ALGNAME "ML-DSA-44"
 #elif DILITHIUM_MODE == 3
-#    define CRYPTO_ALGNAME "Dilithium3"
+#    define CRYPTO_ALGNAME "ML-DSA-65"
 #elif DILITHIUM_MODE == 5
-#    define CRYPTO_ALGNAME "Dilithium5"
+#    define CRYPTO_ALGNAME "ML-DSA-87"
 #endif
 
 #endif

@@ -10,6 +10,13 @@
 #include "polyvec.h"
 #include "randombytes.h"
 #include "sign.h"
+
+/* The FIPS 204 (ML-DSA) API takes a context string; use the empty one. */
+#if defined(CTILDEBYTES)
+#    define CTX_ARGS NULL, 0,
+#else
+#    define CTX_ARGS
+#endif
 #if defined(VECTOR128)
 #    include "ntt_rvv_vlen128.h"
 #endif
@@ -65,14 +72,14 @@ int main(void)
             printf("%02x", buf[j]);
         printf("\n");
 
-        crypto_sign_signature(sig, &siglen, m, MLEN, sk);
+        crypto_sign_signature(sig, &siglen, m, MLEN, CTX_ARGS sk);
         shake256(buf, 32, sig, CRYPTO_BYTES);
         printf("sig = ");
         for (j = 0; j < 32; ++j)
             printf("%02x", buf[j]);
         printf("\n");
 
-        if (crypto_sign_verify(sig, siglen, m, MLEN, pk))
+        if (crypto_sign_verify(sig, siglen, m, MLEN, CTX_ARGS pk))
             fprintf(stderr, "Signature verification failed!\n");
 
         randombytes(seed, sizeof(seed));

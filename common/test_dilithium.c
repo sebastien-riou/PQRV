@@ -5,6 +5,13 @@
 #include "randombytes.h"
 #include "sign.h"
 
+/* The FIPS 204 (ML-DSA) API takes a context string; use the empty one. */
+#if defined(CTILDEBYTES)
+#    define CTX_ARGS NULL, 0,
+#else
+#    define CTX_ARGS
+#endif
+
 #define MLEN 59
 #define NTESTS 10000
 
@@ -24,8 +31,8 @@ int main(void)
         randombytes(m, MLEN);
 
         crypto_sign_keypair(pk, sk);
-        crypto_sign(sm, &smlen, m, MLEN, sk);
-        ret = crypto_sign_open(m2, &mlen, sm, smlen, pk);
+        crypto_sign(sm, &smlen, m, MLEN, CTX_ARGS sk);
+        ret = crypto_sign_open(m2, &mlen, sm, smlen, CTX_ARGS pk);
 
         if (ret) {
             fprintf(stderr, "Verification failed\n");
@@ -51,7 +58,7 @@ int main(void)
             randombytes(&b, 1);
         } while (!b);
         sm[j % (MLEN + CRYPTO_BYTES)] += b;
-        ret = crypto_sign_open(m2, &mlen, sm, smlen, pk);
+        ret = crypto_sign_open(m2, &mlen, sm, smlen, CTX_ARGS pk);
         if (!ret) {
             fprintf(stderr, "Trivial forgeries possible\n");
             return -1;

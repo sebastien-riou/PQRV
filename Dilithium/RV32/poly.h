@@ -34,7 +34,7 @@ void poly_uniform_eta(poly *a, const uint8_t seed[CRHBYTES],
                       uint16_t nonce);
 void poly_uniform_gamma1(poly *a, const uint8_t seed[CRHBYTES],
                          uint16_t nonce);
-void poly_challenge(poly *c, const uint8_t seed[SEEDBYTES]);
+void poly_challenge(poly *c, const uint8_t seed[CTILDEBYTES]);
 void polyeta_pack(uint8_t *r, const poly *a);
 void polyeta_unpack(poly *r, const uint8_t *a);
 void polyt1_pack(uint8_t *r, const poly *a);

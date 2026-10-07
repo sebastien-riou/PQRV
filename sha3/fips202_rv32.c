@@ -99,6 +99,58 @@ void KeccakF1600_StatePermute(uint64_t state[25])
 #endif
 
 /*************************************************
+ * Name:        load64_le
+ *
+ * Description: Load 8 bytes into a 64-bit integer in little-endian order.
+ *              Word accesses are used only when x is 4-byte aligned, so that
+ *              cores without misaligned access support (e.g. RV32IMC MCUs)
+ *              do not trap on unaligned input buffers.
+ *
+ * Arguments:   - const uint8_t *x: pointer to input byte array
+ *
+ * Returns the loaded 64-bit unsigned integer
+ **************************************************/
+static inline uint64_t load64_le(const uint8_t *x)
+{
+    unsigned int i;
+    uint32_t lo, hi;
+    uint64_t r = 0;
+
+    if (((uintptr_t)x & 3) == 0) {
+        /* Two word accesses, the compiler keeps them in registers */
+        memcpy(&lo, __builtin_assume_aligned(x, 4), 4);
+        memcpy(&hi, __builtin_assume_aligned(x + 4, 4), 4);
+        return ((uint64_t)hi << 32) | lo;
+    }
+    for (i = 0; i < 8; i++)
+        r |= (uint64_t)x[i] << 8 * i;
+    return r;
+}
+
+/*************************************************
+ * Name:        store64_le
+ *
+ * Description: Store a 64-bit integer to an array of 8 bytes in little-endian
+ *              order. Word accesses are used only when x is 4-byte aligned.
+ *
+ * Arguments:   - uint8_t *x: pointer to the output byte array
+ *              - uint64_t u: input 64-bit unsigned integer
+ **************************************************/
+static inline void store64_le(uint8_t *x, uint64_t u)
+{
+    unsigned int i;
+    uint32_t lo = (uint32_t)u, hi = (uint32_t)(u >> 32);
+
+    if (((uintptr_t)x & 3) == 0) {
+        memcpy(__builtin_assume_aligned(x, 4), &lo, 4);
+        memcpy(__builtin_assume_aligned(x + 4, 4), &hi, 4);
+        return;
+    }
+    for (i = 0; i < 8; i++)
+        x[i] = u >> 8 * i;
+}
+
+/*************************************************
  * Name:        keccak_init
  *
  * Description: Initializes the Keccak state.
@@ -129,36 +181,32 @@ static unsigned int keccak_absorb(uint64_t s[25], unsigned int pos,
                                   unsigned int r, const uint8_t *in,
                                   size_t inlen)
 {
-    unsigned int k, k_start, k_end;
-    size_t index = 0;
-    uint8_t buf[8];
+    unsigned int i, n;
+    uint64_t lane;
 #ifdef BIT_INTERLEAVING
     uint32_t t, t0, t1;
-    uint64_t temp;
 #endif
 
+    /* r is a multiple of 8: absorb one (possibly partial) lane at a time */
     while (inlen > 0) {
-        if (r - pos >= 8 && inlen >= 8) {
-            k_start = 0;
-            k_end = 8;
-        } else if (r - pos >= 8 && inlen < 8) {
-            k_start = 0;
-            k_end = inlen;
+        n = 8 - pos % 8;
+        if (n > inlen)
+            n = inlen;
+        if (n == 8) {
+            lane = load64_le(in);
         } else {
-            k_start = 8 - (r - pos);
-            k_end = 8;
+            lane = 0;
+            for (i = 0; i < n; i++)
+                lane |= (uint64_t)in[i] << 8 * ((pos + i) % 8);
         }
-        memset(buf, 0, 8 * sizeof(uint8_t));
-        for (k = k_start; k < k_end; k++)
-            buf[k] = in[index++];
-#ifdef BIT_INTERLEAVING
-        temp = *(uint64_t *)buf;
-        toBitInterleaving64b(temp, *(uint64_t *)buf, t, t0, t1);
+#ifndef BIT_INTERLEAVING
+        s[pos / 8] ^= lane;
+#else
+        toBitInterleavingAndXOR64b(lane, s[pos / 8], t, t0, t1);
 #endif
-        for (k = 0; k < 8; k++)
-            s[(pos + k) / 8] ^= (uint64_t)buf[k] << 8 * ((pos + k) % 8);
-        pos += (k_end - k_start);
-        inlen -= (k_end - k_start);
+        in += n;
+        pos += n;
+        inlen -= n;
         if (pos == r) {
             KeccakF1600_StatePermute(s);
             pos = 0;
@@ -182,10 +230,9 @@ static void keccak_finalize(uint64_t s[25], unsigned int pos, unsigned int r,
 {
 #ifdef BIT_INTERLEAVING
     uint32_t t, t0, t1;
-    uint8_t buf[8] = {0};
+    uint64_t lane = (uint64_t)p << 8 * (pos % 8);
 
-    buf[pos % 8] = p;
-    toBitInterleavingAndXOR64b(*(uint64_t *)buf, s[pos / 8], t, t0, t1);
+    toBitInterleavingAndXOR64b(lane, s[pos / 8], t, t0, t1);
     toBitInterleavingAndXOR64b((1ULL << 63), s[r / 8 - 1], t, t0, t1);
 #else
     s[pos / 8] ^= (uint64_t)p << 8 * (pos % 8);
@@ -210,7 +257,7 @@ static void keccak_absorb_once(uint64_t s[25], unsigned int r,
                                const uint8_t *in, size_t inlen, uint8_t p)
 {
     unsigned int i, j;
-    uint8_t buf[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    uint64_t lane;
 #ifdef BIT_INTERLEAVING
     uint32_t t, t0, t1;
 #endif
@@ -220,11 +267,11 @@ static void keccak_absorb_once(uint64_t s[25], unsigned int r,
 
     while (inlen >= r) {
         for (i = 0; i < r / 8; i++) {
+            lane = load64_le(in + 8 * i);
 #ifndef BIT_INTERLEAVING
-            s[i] ^= *(uint64_t *)(in + 8 * i);
+            s[i] ^= lane;
 #else
-            toBitInterleavingAndXOR64b(*(uint64_t *)(in + 8 * i), s[i], t, t0,
-                                       t1);
+            toBitInterleavingAndXOR64b(lane, s[i], t, t0, t1);
 #endif
         }
         in += r;
@@ -233,22 +280,22 @@ static void keccak_absorb_once(uint64_t s[25], unsigned int r,
     }
 
     for (i = 0; inlen >= 8; i += 1, in += 8, inlen -= 8) {
+        lane = load64_le(in);
 #ifndef BIT_INTERLEAVING
-        s[i] ^= *(uint64_t *)(in);
+        s[i] ^= lane;
 #else
-        toBitInterleavingAndXOR64b(*(uint64_t *)(in), s[i], t, t0, t1);
+        toBitInterleavingAndXOR64b(lane, s[i], t, t0, t1);
 #endif
     }
 
-    for (j = 0; j < inlen; j++) {
-        buf[j] = in[j];
-    }
-    buf[j] = p;
+    lane = (uint64_t)p << 8 * inlen;
+    for (j = 0; j < inlen; j++)
+        lane |= (uint64_t)in[j] << 8 * j;
 #ifndef BIT_INTERLEAVING
-    s[i] ^= *(uint64_t *)(buf);
+    s[i] ^= lane;
     s[(r - 1) / 8] ^= (1ULL << 63);
 #else
-    toBitInterleavingAndXOR64b(*(uint64_t *)(buf), s[i], t, t0, t1);
+    toBitInterleavingAndXOR64b(lane, s[i], t, t0, t1);
     toBitInterleavingAndXOR64b((1ULL << 63), s[(r - 1) / 8], t, t0, t1);
 #endif
 }
@@ -275,7 +322,7 @@ static unsigned int keccak_squeeze(uint8_t *out, size_t outlen, uint64_t s[25],
     unsigned int i;
 #ifdef BIT_INTERLEAVING
     uint32_t t, t0, t1;
-    uint8_t buf[8];
+    uint64_t lane = 0;
     unsigned int computed_index = -1;
 #endif
 
@@ -287,10 +334,10 @@ static unsigned int keccak_squeeze(uint8_t *out, size_t outlen, uint64_t s[25],
         for (i = pos; i < r && i < pos + outlen; i++) {
 #ifdef BIT_INTERLEAVING
             if (computed_index != i / 8) {
-                fromBitInterleaving64b(s[(i / 8)], *(uint64_t *)buf, t, t0, t1);
+                fromBitInterleaving64b(s[(i / 8)], lane, t, t0, t1);
                 computed_index = i / 8;
             }
-            *out++ = buf[i % 8];
+            *out++ = lane >> 8 * (i % 8);
 #else
             *out++ = s[i / 8] >> 8 * (i % 8);
 #endif
@@ -322,15 +369,17 @@ static void keccak_squeezeblocks(uint8_t *out, size_t nblocks, uint64_t s[25],
     unsigned int i;
 #ifdef BIT_INTERLEAVING
     uint32_t t, t0, t1;
+    uint64_t lane;
 #endif
 
     while (nblocks) {
         KeccakF1600_StatePermute(s);
         for (i = 0; i < r / 8; i++) {
 #ifndef BIT_INTERLEAVING
-            *(uint64_t *)(out + 8 * i) = s[i];
+            store64_le(out + 8 * i, s[i]);
 #else
-            fromBitInterleaving64b(s[i], *(uint64_t *)(out + 8 * i), t, t0, t1);
+            fromBitInterleaving64b(s[i], lane, t, t0, t1);
+            store64_le(out + 8 * i, lane);
 #endif
         }
         out += r;
@@ -585,15 +634,17 @@ void sha3_256(uint8_t h[32], const uint8_t *in, size_t inlen)
     uint64_t s[25];
 #ifdef BIT_INTERLEAVING
     uint32_t t, t0, t1;
+    uint64_t lane;
 #endif
 
     keccak_absorb_once(s, SHA3_256_RATE, in, inlen, 0x06);
     KeccakF1600_StatePermute(s);
     for (i = 0; i < 4; i++) {
 #ifndef BIT_INTERLEAVING
-        *(uint64_t *)(h + 8 * i) = s[i];
+        store64_le(h + 8 * i, s[i]);
 #else
-        fromBitInterleaving64b(s[i], *(uint64_t *)(h + 8 * i), t, t0, t1);
+        fromBitInterleaving64b(s[i], lane, t, t0, t1);
+        store64_le(h + 8 * i, lane);
 #endif
     }
 }
@@ -613,15 +664,17 @@ void sha3_512(uint8_t h[64], const uint8_t *in, size_t inlen)
     uint64_t s[25];
 #ifdef BIT_INTERLEAVING
     uint32_t t, t0, t1;
+    uint64_t lane;
 #endif
 
     keccak_absorb_once(s, SHA3_512_RATE, in, inlen, 0x06);
     KeccakF1600_StatePermute(s);
     for (i = 0; i < 8; i++) {
 #ifndef BIT_INTERLEAVING
-        *(uint64_t *)(h + 8 * i) = s[i];
+        store64_le(h + 8 * i, s[i]);
 #else
-        fromBitInterleaving64b(s[i], *(uint64_t *)(h + 8 * i), t, t0, t1);
+        fromBitInterleaving64b(s[i], lane, t, t0, t1);
+        store64_le(h + 8 * i, lane);
 #endif
     }
 }

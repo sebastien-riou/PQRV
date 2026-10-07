@@ -24,6 +24,7 @@ If your goal is to reproduce the experimental results in our paper, please refer
 1. The code for the NTT RVV implementation has been refactored. 
 2. Support for the SpacemiT X60 core with a VLEN of 256 bits has been added. 
 3. Updates have been made in accordance with the latest FIPS 203 standard, primarily drawing references from the `pq-crystals/kyber` repository.
+4. `Dilithium/RV32` has been updated to ML-DSA as specified in the FIPS 204 standard, following the `pq-crystals/dilithium` repository; see [ML-DSA (FIPS 204) on RV32IMC](#ml-dsa-fips-204-on-rv32imc). `Dilithium/ref` and `Dilithium/RV64` still implement round 3 Dilithium.
 
 This project reused public-domain code from the following repositories: https://github.com/pq-crystals/kyber and https://github.com/pq-crystals/dilithium.
 
@@ -215,3 +216,30 @@ make speed -j
 make run_speed
 ```
 The experimental results will be output to the `txt` files in the `Dilithium/RV64` directory.
+
+### ML-DSA (FIPS 204) on RV32IMC
+
+`Dilithium/RV32` implements ML-DSA-44/65/87 (FIPS 204), with modes 2/3/5 of `DILITHIUM_MODE`:
+- `crypto_sign_signature`, `crypto_sign_verify`, `crypto_sign` and `crypto_sign_open` take a context string (`ctx`, `ctxlen`, at most 255 bytes).
+- `crypto_sign_keypair_internal`, `crypto_sign_signature_internal` and `crypto_sign_verify_internal` are the internal functions of FIPS 204 (key generation from a seed, signature of a message with its prefix).
+- Signing is deterministic, unless `DILITHIUM_RANDOMIZED_SIGNING` is defined (hedged signing, uses `randombytes`).
+- HashML-DSA is not implemented.
+
+Since `Dilithium/ref` is still round 3, `make run_diff_vectors` in `Dilithium/RV32` no longer gives identical outputs.
+Only the RV32IMC build (`fips202_rv32im.S`, `ntt_dualissue_mont_rv32im.S`) has been checked against test vectors; the RV32IMB, RV32IMV and RV32IMBV builds use the same C code but have not been tested.
+
+`Dilithium/RV32/Makefile_rv32imc` builds bare-metal known-answer tests for RV32IMC (`common/test_kat_mldsa.c`) and runs them with the [Unicorn](https://www.unicorn-engine.org/) emulator, which is installed in a Python virtual environment in `Dilithium/RV32/out/venv` on first use.
+It needs:
+- a bare-metal RISC-V GCC with newlib, such as the [xPack GNU RISC-V Embedded GCC](https://xpack-dev-tools.github.io/riscv-none-elf-gcc-xpack/) (`riscv-none-elf-gcc`),
+- the crypto-benchmark repository next to this one, for its ML-DSA test vectors (`libmldsa-lbmk/include`) and SHA-256 implementation; set `CRYPTO_BENCHMARK_DIR` if it is elsewhere.
+
+```bash
+cd Dilithium/RV32
+make -f Makefile_rv32imc run_kat CROSS_COMPILE=/path/to/riscv-none-elf-
+```
+For each parameter set, the tests check key generation from a seed, deterministic signing (signatures and number of iterations of the rejection loop), verification, rejection of tampered signatures, the context string API, and unaligned buffers.
+
+The ELF files use the memory map of the QEMU `virt` machine, so they should also run on QEMU (not tested):
+```bash
+qemu-system-riscv32 -M virt -bios none -nographic -kernel out/test_kat2_rv32imc.elf
+```
