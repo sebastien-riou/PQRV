@@ -11,11 +11,11 @@
 #define CRYPTO_BYTES KYBER_SSBYTES
 
 #if (KYBER_K == 2)
-#    define CRYPTO_ALGNAME "Kyber512"
+#    define CRYPTO_ALGNAME "ML-KEM-512"
 #elif (KYBER_K == 3)
-#    define CRYPTO_ALGNAME "Kyber768"
+#    define CRYPTO_ALGNAME "ML-KEM-768"
 #elif (KYBER_K == 4)
-#    define CRYPTO_ALGNAME "Kyber1024"
+#    define CRYPTO_ALGNAME "ML-KEM-1024"
 #endif
 
 int crypto_kem_keypair_derand(uint8_t *pk, uint8_t *sk,
@@ -25,5 +25,7 @@ int crypto_kem_enc_derand(uint8_t *ct, uint8_t *ss, const uint8_t *pk,
                           const uint8_t *coins);
 int crypto_kem_enc(uint8_t *ct, uint8_t *ss, const uint8_t *pk);
 int crypto_kem_dec(uint8_t *ss, const uint8_t *ct, const uint8_t *sk);
+int crypto_kem_check_pk(const uint8_t *pk);
+int crypto_kem_check_sk(const uint8_t *sk);
 
 #endif

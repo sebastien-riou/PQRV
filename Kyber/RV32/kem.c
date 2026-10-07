@@ -177,3 +177,57 @@ int crypto_kem_dec(uint8_t *ss, const uint8_t *ct, const uint8_t *sk)
 
     return 0;
 }
+
+/*************************************************
+ * Name:        crypto_kem_check_pk
+ *
+ * Description: Input checking of an encapsulation key (modulus check of
+ *              FIPS 203, section 7.2): every 12-bit coefficient of the
+ *              encoded vector must be less than q, i.e.
+ *              ByteEncode12(ByteDecode12(pk)) == pk. The type check is the
+ *              size of the array.
+ *
+ * Arguments:   - const uint8_t *pk: pointer to input public key
+ *                (an already allocated array of KYBER_PUBLICKEYBYTES
+ *bytes)
+ *
+ * Returns 0 if the check passes and -1 otherwise
+ **************************************************/
+int crypto_kem_check_pk(const uint8_t *pk)
+{
+    unsigned int i;
+    uint16_t a0, a1;
+
+    for (i = 0; i < KYBER_POLYVECBYTES / 3; i++) {
+        a0 = (pk[3 * i + 0] | ((uint16_t)pk[3 * i + 1] << 8)) & 0xFFF;
+        a1 = ((pk[3 * i + 1] >> 4) | ((uint16_t)pk[3 * i + 2] << 4)) & 0xFFF;
+        if (a0 >= KYBER_Q || a1 >= KYBER_Q)
+            return -1;
+    }
+    return 0;
+}
+
+/*************************************************
+ * Name:        crypto_kem_check_sk
+ *
+ * Description: Input checking of a decapsulation key (hash check of
+ *              FIPS 203, section 7.3): the hash of the embedded
+ *              encapsulation key must match the stored one. The type check
+ *              is the size of the array.
+ *
+ * Arguments:   - const uint8_t *sk: pointer to input private key
+ *                (an already allocated array of KYBER_SECRETKEYBYTES
+ *bytes)
+ *
+ * Returns 0 if the check passes and -1 otherwise
+ **************************************************/
+int crypto_kem_check_sk(const uint8_t *sk)
+{
+    uint8_t h[KYBER_SYMBYTES];
+
+    hash_h(h, sk + KYBER_INDCPA_SECRETKEYBYTES, KYBER_INDCPA_PUBLICKEYBYTES);
+    if (verify(h, sk + KYBER_SECRETKEYBYTES - 2 * KYBER_SYMBYTES,
+               KYBER_SYMBYTES))
+        return -1;
+    return 0;
+}

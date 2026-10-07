@@ -1,0 +1,161 @@
+#!/bin/bash
+# Build libpqrv: a static library exposing ML-KEM (FIPS 203) and ML-DSA
+# (FIPS 204), all parameter sets, from the optimized RV32 code of PQRV
+# (Kyber/RV32 and Dilithium/RV32). The API is in include/pqrv.h.
+#
+# Usage: ./buildit [TARGET]...
+#   TARGET: rv32imcb (default): RV32IMC + Zbb, bit-interleaved Keccak
+#           rv32imc:            RV32IMC
+# Environment:
+#   CROSS_COMPILE: toolchain prefix (default: riscv-none-elf-)
+#
+# Output: build/<TARGET>/lib/libpqrv.a
+#
+# Each parameter set is linked into one relocatable object in which only its
+# API, renamed pqrv_<algorithm><parameter set>_*, is global: all parameter
+# sets of both algorithms can be linked in the same program.
+
+set -euo pipefail
+
+CROSS_COMPILE=${CROSS_COMPILE:-riscv-none-elf-}
+CC=${CROSS_COMPILE}gcc
+LD=${CROSS_COMPILE}ld
+OBJCOPY=${CROSS_COMPILE}objcopy
+AR=${CROSS_COMPILE}ar
+NM=${CROSS_COMPILE}nm
+
+LIBDIR=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(dirname "$LIBDIR")
+
+CFLAGS_COMMON=(-Wall -Wextra -Wpedantic -Wmissing-prototypes -Wredundant-decls
+               -Wshadow -Wpointer-arith -O3 -fomit-frame-pointer
+               -ffunction-sections -fdata-sections -mabi=ilp32 -DRV32=1)
+
+MLKEM_SOURCES=(kem indcpa polyvec poly ntt cbd reduce verify symmetric-shake)
+MLDSA_SOURCES=(sign packing polyvec poly ntt reduce rounding)
+
+# API of each parameter set: <exported suffix>:<symbol in the PQRV sources>
+MLKEM_API=(keypair_derand:crypto_kem_keypair_derand
+           keypair:crypto_kem_keypair
+           enc_derand:crypto_kem_enc_derand
+           enc:crypto_kem_enc
+           dec:crypto_kem_dec
+           check_pk:crypto_kem_check_pk
+           check_sk:crypto_kem_check_sk)
+MLDSA_API=(keypair_internal:crypto_sign_keypair_internal
+           keypair:crypto_sign_keypair
+           signature_internal:crypto_sign_signature_internal
+           signature:crypto_sign_signature
+           sign:crypto_sign
+           verify_internal:crypto_sign_verify_internal
+           verify:crypto_sign_verify
+           open:crypto_sign_open)
+
+# Symbols the library may need from the application or the C library;
+# randombytes is only used by the randomized key generation and encapsulation
+ALLOWED_UNDEFINED="memcpy memset randombytes"
+
+# build_pset <name> <api array name> <source dir> <NTT asm> <cflags...>
+# Compile one parameter set and link it into build/<TARGET>/obj/pqrv_<name>.obj
+build_pset() {
+    local name=$1 api=$2 srcdir=$3 nttasm=$4
+    shift 4
+    local objdir=$OUT/obj/$name
+    local objs=() src entry
+    local -n api_ref=$api
+
+    mkdir -p "$objdir"
+    for src in "${SOURCES[@]}"; do
+        "$CC" "${CFLAGS_TARGET[@]}" "$@" -c "$srcdir/$src.c" -o "$objdir/$src.o"
+        objs+=("$objdir/$src.o")
+    done
+    "$CC" "${CFLAGS_TARGET[@]}" "$@" -c "$ROOT/sha3/fips202_rv32.c" -o "$objdir/fips202_rv32.o"
+    "$CC" "${CFLAGS_TARGET[@]}" "$@" -c "$KECCAK_ASM" -o "$objdir/keccak.o"
+    "$CC" "${CFLAGS_TARGET[@]}" "$@" -c "$nttasm" -o "$objdir/ntt_asm.o"
+    objs+=("$objdir/fips202_rv32.o" "$objdir/keccak.o" "$objdir/ntt_asm.o")
+
+    : > "$objdir/redefine.txt"
+    : > "$objdir/exports.txt"
+    for entry in "${api_ref[@]}"; do
+        echo "${entry#*:} pqrv_${name}_${entry%%:*}" >> "$objdir/redefine.txt"
+        echo "pqrv_${name}_${entry%%:*}" >> "$objdir/exports.txt"
+    done
+    cat "$objdir/exports.txt" >> "$OUT/obj/exports.txt"
+
+    "$LD" -r -o "$objdir/$name.o" "${objs[@]}"
+    "$OBJCOPY" --redefine-syms="$objdir/redefine.txt" "$objdir/$name.o" "$objdir/$name.renamed.o"
+    "$OBJCOPY" --keep-global-symbols="$objdir/exports.txt" "$objdir/$name.renamed.o" "$OUT/obj/pqrv_$name.obj"
+}
+
+# check_symbols <archive>: the archive must define exactly the API, and only
+# need symbols from ALLOWED_UNDEFINED
+check_symbols() {
+    local lib=$1 sym errors=0
+
+    if ! diff <(sort "$OUT/obj/exports.txt") \
+              <("$NM" -g --defined-only "$lib" | awk 'NF == 3 { print $3 }' | sort); then
+        echo "error: $lib does not export exactly the API (diff: expected < > actual)" >&2
+        errors=1
+    fi
+    for sym in $("$NM" -u "$lib" | awk 'NF == 2 { print $2 }' | sort -u); do
+        if [[ " $ALLOWED_UNDEFINED " != *" $sym "* ]]; then
+            echo "error: $lib needs unexpected symbol $sym" >&2
+            errors=1
+        fi
+    done
+    return $errors
+}
+
+build_target() {
+    local target=$1 k mode pset
+
+    case $target in
+        rv32imcb)
+            # Zbb is the only extension used beyond RV32IMC (rori and andn in
+            # the Keccak permutation), so the library runs on any RV32IMC core
+            # with Zbb, e.g. Hazard3 (RP2350)
+            CFLAGS_TARGET=("${CFLAGS_COMMON[@]}" -march=rv32imc_zbb_zicsr -DBIT_INTERLEAVING)
+            KECCAK_ASM=$ROOT/sha3/fips202_rv32imb_bitinter.S
+            ;;
+        rv32imc)
+            CFLAGS_TARGET=("${CFLAGS_COMMON[@]}" -march=rv32imc_zicsr)
+            KECCAK_ASM=$ROOT/sha3/fips202_rv32im.S
+            ;;
+        *)
+            echo "error: unknown target '$target' (rv32imcb or rv32imc)" >&2
+            exit 1
+            ;;
+    esac
+
+    OUT=$LIBDIR/build/$target
+    rm -rf "$OUT/obj" "$OUT/lib"
+    mkdir -p "$OUT/obj" "$OUT/lib"
+    : > "$OUT/obj/exports.txt"
+
+    SOURCES=("${MLKEM_SOURCES[@]}")
+    for k in 2 3 4; do
+        build_pset "mlkem$((256 * k))" MLKEM_API "$ROOT/Kyber/RV32" \
+            "$ROOT/ntt/kyber/ntt_dualissue_plant_rv32im.S" \
+            -DKYBER_K=$k -I"$ROOT/Kyber/RV32" -I"$ROOT/ntt/kyber" -I"$ROOT/sha3"
+    done
+
+    SOURCES=("${MLDSA_SOURCES[@]}")
+    for mode in 2 3 5; do
+        case $mode in 2) pset=44 ;; 3) pset=65 ;; 5) pset=87 ;; esac
+        build_pset "mldsa$pset" MLDSA_API "$ROOT/Dilithium/RV32" \
+            "$ROOT/ntt/dilithium/ntt_dualissue_mont_rv32im.S" \
+            -DDILITHIUM_MODE=$mode -I"$ROOT/Dilithium/RV32" -I"$ROOT/ntt/dilithium" \
+            -I"$ROOT/sha3" -I"$ROOT/common"
+    done
+
+    "$AR" rcs "$OUT/lib/libpqrv.a" "$OUT"/obj/pqrv_*.obj
+    check_symbols "$OUT/lib/libpqrv.a"
+    echo "built $OUT/lib/libpqrv.a"
+}
+
+if [ $# -eq 0 ]; then
+    set -- rv32imcb
+fi
+for target in "$@"; do
+    build_target "$target"
+done

@@ -25,6 +25,7 @@ If your goal is to reproduce the experimental results in our paper, please refer
 2. Support for the SpacemiT X60 core with a VLEN of 256 bits has been added. 
 3. Updates have been made in accordance with the latest FIPS 203 standard, primarily drawing references from the `pq-crystals/kyber` repository.
 4. `Dilithium/RV32` has been updated to ML-DSA as specified in the FIPS 204 standard, following the `pq-crystals/dilithium` repository; see [ML-DSA (FIPS 204) on RV32IMC](#ml-dsa-fips-204-on-rv32imc). `Dilithium/ref` and `Dilithium/RV64` still implement round 3 Dilithium.
+5. `libpqrv` builds a static library exposing ML-KEM and ML-DSA for RV32IMCB and RV32IMC, usable by crypto-benchmark; see [libpqrv](#libpqrv-ml-kem-and-ml-dsa-library-for-rv32imcb).
 
 This project reused public-domain code from the following repositories: https://github.com/pq-crystals/kyber and https://github.com/pq-crystals/dilithium.
 
@@ -242,4 +243,37 @@ For each parameter set, the tests check key generation from a seed, deterministi
 The ELF files use the memory map of the QEMU `virt` machine, so they should also run on QEMU (not tested):
 ```bash
 qemu-system-riscv32 -M virt -bios none -nographic -kernel out/test_kat2_rv32imc.elf
+```
+
+### libpqrv: ML-KEM and ML-DSA library for RV32IMCB
+
+`libpqrv/buildit` builds a static library with ML-KEM-512/768/1024 (FIPS 203, from `Kyber/RV32`) and ML-DSA-44/65/87 (FIPS 204, from `Dilithium/RV32`):
+```bash
+cd libpqrv
+./buildit            # rv32imcb: RV32IMC + Zbb, bit-interleaved Keccak
+./buildit rv32imc    # RV32IMC
+```
+It needs a bare-metal RISC-V GCC (`riscv-none-elf-gcc` on the `PATH`, or set `CROSS_COMPILE`).
+The output is `libpqrv/build/<target>/lib/libpqrv.a`, the API is in [libpqrv/include/pqrv.h](libpqrv/include/pqrv.h):
+- each parameter set is a single object in which only its API (`pqrv_mlkem512_*`, ..., `pqrv_mldsa87_*`) is global, so all parameter sets can be linked in the same program;
+- the rv32imcb build uses only Zbb beyond RV32IMC (`-march=rv32imc_zbb_zicsr`), so it runs on the Hazard3 cores of the RP2350;
+- `pqrv_mlkemNNN_check_pk` and `pqrv_mlkemNNN_check_sk` are the input checks of FIPS 203, which encapsulation and decapsulation do not perform;
+- only `pqrv_mlkemNNN_keypair`, `pqrv_mlkemNNN_enc` and `pqrv_mldsaNN_keypair` need a `randombytes` function from the application;
+- the assembly routines use `gp` and `tp` as scratch registers: interrupt handlers must not rely on them (link with `--no-relax-gp`);
+- ML-DSA signing needs up to 53 KB, 81 KB and 124 KB of stack for ML-DSA-44/65/87.
+
+`libpqrv/testit` runs the rv32imc build against the ML-KEM and ML-DSA test vectors of crypto-benchmark with the Unicorn emulator (installed in `libpqrv/build/venv` on first use).
+The emulator does not support Zbb, so the rv32imcb build must be tested on hardware.
+
+In crypto-benchmark, the library is `CRYPTO_LIB=PQRV` (goal `fast`):
+```bash
+cd ../crypto-benchmark
+python3 link_ext.py --goal=fast
+./buildit on/rv32imcb mlkem 512 PQRV
+```
+crypto-benchmark builds for rv32imc made with `-DRAW_COM=1` can be run with the emulator, for example:
+```bash
+./buildit on/rv32imc mldsa 44 PQRV minSizeRel -DRAW_COM=1
+../PQRV/libpqrv/build/venv/bin/python ../PQRV/common/rv32_virt/run.py --machine crypto-benchmark \
+    --uart-log lbmk-uart-rv32imc.log build/rv32imc/mldsa/44/lbmk-test.elf
 ```

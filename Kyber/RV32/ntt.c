@@ -80,12 +80,12 @@ uint32_t zetas_intt_rv32im[128] = {
     3200905336, 1847519727, 3482161830, 886345009,  51606697,   966335388,
     1802363867, 2435836064};
 
-void ntt(int16_t *poly)
+void ntt(int16_t poly[256])
 {
     ntt_rv32im(poly, zetas_ntt_rv32im);
 }
 
-void intt(int16_t *poly)
+void intt(int16_t poly[256])
 {
     intt_rv32im(poly, zetas_intt_rv32im);
 }
